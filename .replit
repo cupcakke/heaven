@@ -1,4 +1,8 @@
-run = "nim --version"
+run = "v run main.v"
+entrypoint = "main.v"
 
 [nix]
 channel = "stable-25_05"
+
+[agent]
+expertMode = true
