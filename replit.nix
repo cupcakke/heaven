@@ -1,9 +1,7 @@
 { pkgs }: {
   deps = [
-    pkgs.nim
-    pkgs.vlang
-    pkgs.git
+   pkgs.nimble
+   pkgs.nim
     pkgs.gcc
-    pkgs.gnumake
   ];
 }
