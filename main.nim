@@ -1601,54 +1601,38 @@ proc loadPromptRegistry(path: string): OrderedTable[string, string] =
   if not fileExists(path):
     raise newException(IOError, "prompt configuration file does not exist: " & path)
   var prompts = initOrderedTable[string, string]()
-  let lines = readFile(path).splitLines()
-  var key = ""
-  var promptLines: seq[string] = @[]
-  var literal = false
-  proc flushCurrent() =
+  let raw = readFile(path)
+  let header = ": |"
+  var cursor = 0
+  while true:
+    let marker = raw.find(header, cursor)
+    if marker < 0:
+      break
+    var keyStart = marker - 1
+    while keyStart >= 0 and (raw[keyStart].isAlphaNumeric or raw[keyStart] == '_'):
+      dec keyStart
+    inc keyStart
+    let key = raw[keyStart ..< marker].strip()
     if key.len == 0:
-      return
-    var value = ""
-    if literal:
-      value = promptLines.join("\n").strip(chars = {'\n', '\r'})
-    elif promptLines.len > 0:
-      value = promptLines.join(" ").strip()
+      raise newException(ValueError, "invalid prompt YAML header")
+    let bodyStart = marker + header.len
+    let nextMarker = raw.find(header, bodyStart)
+    let bodyEnd = if nextMarker < 0: raw.len else: nextMarker
+    var promptLines: seq[string] = @[]
+    for line in raw[bodyStart ..< bodyEnd].splitLines():
+      if line.len >= 2 and line[0] == ' ' and line[1] == ' ':
+        promptLines.add(line[2 .. ^1])
+      else:
+        promptLines.add(line)
+    let value = promptLines.join("\n").strip(chars = {' ', '\t', '\n', '\r'})
     if value.len == 0:
       raise newException(ValueError, "empty prompt: " & key)
     if prompts.hasKey(key):
       raise newException(ValueError, "duplicate prompt key: " & key)
     prompts[key] = value
-    key = ""
-    promptLines = @[]
-    literal = false
-  for raw in lines:
-    if raw.len > 0 and raw[0] notin {' ', '\t'}:
-      let colon = raw.find(':')
-      if colon <= 0:
-        raise newException(ValueError, "invalid prompt YAML line: " & raw)
-      flushCurrent()
-      key = raw[0 ..< colon].strip()
-      let tail = raw[colon + 1 .. ^1].strip()
-      if tail in ["|", "|-", "|+"]:
-        literal = true
-      elif tail in [">", ">-", ">+"]:
-        literal = false
-      elif tail.len > 0:
-        promptLines.add(yamlScalar(tail))
-      else:
-        raise newException(ValueError, "prompt value must be a scalar or block: " & key)
-    else:
-      if key.len == 0:
-        if raw.strip().len > 0:
-          raise newException(ValueError, "indented content without prompt key")
-        continue
-      if raw.len >= 2 and raw[0] == ' ' and raw[1] == ' ':
-        promptLines.add(raw[2 .. ^1])
-      elif raw.strip().len == 0:
-        promptLines.add("")
-      else:
-        raise newException(ValueError, "prompt blocks must use two-space indentation")
-  flushCurrent()
+    if nextMarker < 0:
+      break
+    cursor = nextMarker
   if prompts.len == 0:
     raise newException(ValueError, "prompt configuration is empty: " & path)
   result = prompts
@@ -2785,7 +2769,7 @@ proc recordHandoff(h: TaskHandle, fromRole, toRole: ModelRole, reason: string, p
 
 proc currentTraceStep(taskId: string): int64 =
   let rows = store.query("SELECT COALESCE(MAX(step_index),-1) AS step_index FROM raw_traces WHERE task_id=?", @[%taskId])
-  if rows.len == 0: 0 else: rows[0].getInt("step_index", -1) + 1
+  if rows.len == 0: 0'i64 else: rows[0].getInt("step_index", -1) + 1'i64
 
 proc logRawTrace(h: TaskHandle, skillId: string, preState, action, observation, delta, postState, receipt: JsonNode, success: bool, latencyMs: int) =
   let stepIndex = currentTraceStep(h.taskId)
@@ -4398,7 +4382,7 @@ proc executeMicroAction(h: TaskHandle): Future[bool] {.async.} =
   release(h.lock)
   h.checkpoint(action, %*{"receipt": result.receipt, "ok": result.ok})
   h.persistTask()
-  result.ok
+  return result.ok
 
 proc completionCheck(h: TaskHandle): Future[(bool, string)] {.async.} =
   h.transitionOrchestrator(osValidate)
@@ -6440,7 +6424,7 @@ proc serveStatic(req: Request, urlPath: string, issueSession: bool): Future[bool
     let token = createBrowserSession(defaultTenantId)
     headers["Set-Cookie"] = sessionCookie(token)
   await req.respond(Http200, readFile(path), headers)
-  true
+  return true
 
 proc stopTaskTree(taskId: string) =
   let h = restoreTask(taskId)
@@ -6466,7 +6450,7 @@ proc stopTaskTree(taskId: string) =
       release(agent.lock)
   release(subAgentsLock)
 
-proc handleHttpRequest(req: Request) {.async.} =
+proc handleHttpRequest(req: Request) {.async, gcsafe.} =
   let path = req.url.path
   if req.reqMethod == HttpOptions:
     let headers = newHttpHeaders({"Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Api-Key"})
@@ -6829,9 +6813,7 @@ proc main() =
   asyncCheck knowledgeConsolidationLoop()
   let server = newAsyncHttpServer(maxBody = positiveEnvInt("HTTP_MAX_BODY_BYTES", DefaultMaxRequestBodyBytes))
   echo "Runtime listening on port ", serverPort
-  let httpHandlerPtr = cast[pointer](handleHttpRequest)
-  let httpCallback = cast[proc (request: Request): Future[void] {.closure, gcsafe.}](httpHandlerPtr)
-  waitFor server.serve(Port(serverPort), httpCallback, address = "0.0.0.0")
+  waitFor server.serve(Port(serverPort), handleHttpRequest, address = "0.0.0.0")
 
 when isMainModule:
   main()
