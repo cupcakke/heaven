@@ -27,3 +27,7 @@ outputType = "webview"
 task = "shell.exec"
 args = "nim c --threads:off main.nim && PORT=5000 ./main"
 waitForPort = 5000
+
+[[ports]]
+localPort = 5000
+externalPort = 80

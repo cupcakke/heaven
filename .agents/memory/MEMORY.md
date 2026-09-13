@@ -1,0 +1,1 @@
+- [Nim runtime startup](nim-runtime-startup.md) — this service needs SQLite available and Nim threads disabled in the preview workflow.
