@@ -2091,8 +2091,9 @@ proc geminiInputFromMessages(messages: JsonNode): JsonNode =
     if roleName == "system":
       continue
     let content = m{"content"}
+    var contentParts = newJArray()
     if content.kind == JString:
-      result.add(%*{"type": "text", "text": roleName & ": " & content.getStr()})
+      contentParts.add(%*{"type": "text", "text": content.getStr()})
     elif content.kind == JArray:
       for part in content.elems:
         if part.kind != JObject:
@@ -2102,7 +2103,7 @@ proc geminiInputFromMessages(messages: JsonNode): JsonNode =
         of "text", "input_text":
           let text = part{"text"}.getStr(part{"content"}.getStr(""))
           if text.len > 0:
-            result.add(%*{"type": "text", "text": roleName & ": " & text})
+            contentParts.add(%*{"type": "text", "text": text})
         of "image_url", "input_image", "image":
           var value = part{"url"}.getStr(part{"uri"}.getStr(part{"data"}.getStr("")))
           if part.hasKey("image_url"):
@@ -2110,7 +2111,7 @@ proc geminiInputFromMessages(messages: JsonNode): JsonNode =
               value = part["image_url"]{"url"}.getStr(value)
             elif part["image_url"].kind == JString:
               value = part["image_url"].getStr()
-          addGeminiMediaPart(result, "image", value, part{"mime_type"}.getStr("image/jpeg"))
+          addGeminiMediaPart(contentParts, "image", value, part{"mime_type"}.getStr("image/jpeg"))
         of "video_url", "input_video", "video":
           var value = part{"url"}.getStr(part{"uri"}.getStr(part{"data"}.getStr("")))
           if part.hasKey("video_url"):
@@ -2118,12 +2119,15 @@ proc geminiInputFromMessages(messages: JsonNode): JsonNode =
               value = part["video_url"]{"url"}.getStr(value)
             elif part["video_url"].kind == JString:
               value = part["video_url"].getStr()
-          addGeminiMediaPart(result, "video", value, part{"mime_type"}.getStr("video/mp4"))
+          addGeminiMediaPart(contentParts, "video", value, part{"mime_type"}.getStr("video/mp4"))
         of "document", "file":
           var value = part{"url"}.getStr(part{"uri"}.getStr(part{"data"}.getStr("")))
-          addGeminiMediaPart(result, "document", value, part{"mime_type"}.getStr("application/pdf"))
+          addGeminiMediaPart(contentParts, "document", value, part{"mime_type"}.getStr("application/pdf"))
         else:
           discard
+    if contentParts.len > 0:
+      let stepType = if roleName == "assistant": "model_output" else: "user_input"
+      result.add(%*{"type": stepType, "content": contentParts})
 
 proc geminiSystemInstructionFromMessages(messages: JsonNode): string =
   let specialist = promptText("gemini38")
