@@ -36,3 +36,8 @@ externalPort = 80
 
 [userenv.shared]
 CEREBRAS_GEMMA4_MODEL = "qwen-3.8-27b"
+
+[deployment]
+deploymentTarget = "vm"
+run = ["./main"]
+build = ["nim", "c", "--threads:off", "-d:ssl", "-d:release", "main.nim"]
