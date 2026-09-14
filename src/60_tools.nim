@@ -720,9 +720,12 @@ proc registerLegacyTools() =
       except CatchableError as e:
         return ToolResult(ok: false, payload: %*{"url": url}, receipt: "", message: e.msg))
 
+proc registerImageTools()
+
 proc initTools() =
   registerTools()
   registerLegacyTools()
+  registerImageTools()
 
 proc registerReasonTool() =
   registerTool("reason", "Run a recursive specialist reasoning pass and return its structured result.", %*{"goal": "string", "context": "string optional", "depth": "int optional", "max_depth": "int optional", "branches": "int optional"},
@@ -740,4 +743,67 @@ proc registerReasonTool() =
         return ToolResult(ok: true, payload: resultNode, receipt: "reason:" & sha1Hex(goal & ":" & canonical(resultNode)), message: "reasoning completed")
       except CatchableError as e:
         return ToolResult(ok: false, payload: %*{"goal": goal}, receipt: "", message: e.msg))
+
+proc registerImageTools() =
+  registerTool("image_generate", "Generate real raster images through the FlyMyAI backend and persist them as task artifacts. The director rule is enforced by the runtime: policy safe routes to flymyai/gpt-image-2-5-sunburst_edit and may only be issued by gemini38, policy adult routes to flymyai/bytedance-seedream-5_0_pro and may only be issued by grok43. When policy is omitted it is derived from the calling director model, so a wrong director is rejected instead of silently downgraded. Supply prompt plus optional size, quality, moderation, watermark, sequential_image_generation, optimize_prompt_mode, name and reference_images (artifact:<id>, image:<id>, http(s) URL, data: URL or tenant workspace path). Pass images as an array of such request objects to generate a batch in one call. Every generated file is stored under the task artifact directory, registered as an artifact and returned with image_id, path, url, view_url, bytes and sha1.", %*{
+    "prompt": "string optional",
+    "policy": "safe|adult optional",
+    "size": "string optional",
+    "quality": "auto|low|medium|high|xhigh|max optional",
+    "moderation": "auto|low optional",
+    "watermark": "bool optional",
+    "sequential_image_generation": "auto|disabled optional",
+    "optimize_prompt_mode": "standard|fast optional",
+    "name": "string optional",
+    "reference_images": "string[] optional",
+    "images": "array optional"
+  },
+    proc(h: TaskHandle, args: JsonNode): Future[ToolResult] {.async.} =
+      return await runImageGenerationTool(h, args, false))
+
+  registerTool("image_edit", "Edit, restyle, extend or composite existing images through the FlyMyAI backend using the same enforced director rule as image_generate. reference_images is mandatory and accepts artifact:<id>, image:<id> for a previously generated image, an http(s) URL, a data: URL or a tenant workspace path. The safe director model gemini38 edits with flymyai/gpt-image-2-5-sunburst_edit and one reference image, the adult director model grok43 edits with flymyai/bytedance-seedream-5_0_pro and up to fourteen reference slots. The prompt must describe the concrete edit, not the whole scene again.", %*{
+    "prompt": "string",
+    "reference_images": "string[]",
+    "policy": "safe|adult optional",
+    "size": "string optional",
+    "quality": "auto|low|medium|high|xhigh|max optional",
+    "moderation": "auto|low optional",
+    "watermark": "bool optional",
+    "sequential_image_generation": "auto|disabled optional",
+    "optimize_prompt_mode": "standard|fast optional",
+    "name": "string optional"
+  },
+    proc(h: TaskHandle, args: JsonNode): Future[ToolResult] {.async.} =
+      return await runImageGenerationTool(h, args, true))
+
+  registerTool("image_list", "Read persisted image generation records. Without arguments it lists the image history of the current task with policy, director model, upstream model, status, stored files and artifact ids. Pass image_id for the full record of one generation including the recorded request and the summarized upstream response, or scope tenant with an optional status filter to inspect the tenant history.", %*{
+    "image_id": "string optional",
+    "status": "queued|succeeded|failed optional",
+    "scope": "task|tenant optional",
+    "limit": "int optional"
+  },
+    proc(h: TaskHandle, args: JsonNode): Future[ToolResult] {.async.} =
+      let tenant = if h.tenantId.len > 0: h.tenantId else: defaultTenantId
+      let imageId = args{"image_id"}.getStr("").strip()
+      let limit = max(1, min(100, args{"limit"}.getInt(20)))
+      let status = args{"status"}.getStr("").strip().toLowerAscii()
+      if imageId.len > 0:
+        let record = imageGenerationRecord(imageId)
+        if record.isNil:
+          return ToolResult(ok: false, payload: %*{"image_id": imageId}, receipt: "", message: "unknown image id: " & imageId)
+        if record{"tenant_id"}.getStr("") != tenant:
+          return ToolResult(ok: false, payload: %*{"image_id": imageId}, receipt: "", message: "image id does not belong to this tenant: " & imageId)
+        return ToolResult(ok: true, payload: %*{"image": record}, receipt: "image:" & imageId, message: "image record loaded")
+      let scope = args{"scope"}.getStr("task").strip().toLowerAscii()
+      let scopeName = if scope == "tenant": "tenant" else: "task"
+      let taskId = if scopeName == "tenant": "" else: h.taskId
+      let records = imageGenerationListJson(tenant, taskId, status, limit)
+      return ToolResult(ok: true, payload: %*{
+        "scope": scopeName,
+        "task_id": taskId,
+        "status_filter": status,
+        "count": records.elems.len,
+        "images": records,
+        "task_catalog": imageGenerationCatalogJson(h.taskId, limit)
+      }, receipt: "images:" & $records.elems.len, message: "listed " & $records.elems.len & " image records"))
 

@@ -75,6 +75,7 @@ proc providerName(p: ProviderKind): string =
   of pkRequesty: "requesty"
   of pkCerebras: "cerebras"
   of pkGemini: "gemini"
+  of pkFlyMyAi: "flymyai"
 
 proc modelSpec(role: ModelRole): ModelSpec =
   case role
@@ -236,8 +237,19 @@ proc normalizePlanStep(step: JsonNode, index: int): JsonNode =
     raise newException(ValueError, "plan step goal is required")
   if not result.hasKey("execution_mode") or result["execution_mode"].kind != JString or result["execution_mode"].getStr("").strip().len == 0:
     raise newException(ValueError, "plan step execution_mode is required because the orchestrator must choose it explicitly")
-  if result["execution_mode"].getStr("") notin ["reason", "vm", "browser", "desktop", "visual", "document", "subagent"]:
+  if result["execution_mode"].getStr("") notin ["reason", "vm", "browser", "desktop", "visual", "document", "subagent", "image"]:
     raise newException(ValueError, "invalid execution_mode in plan step: " & result["execution_mode"].getStr(""))
+  if result["execution_mode"].getStr("") == "image":
+    let imagePolicy = result{"image_policy"}.getStr("").strip().toLowerAscii()
+    let imageDirector = modelRoleName(role)
+    if imagePolicy.len == 0:
+      raise newException(ValueError, "image plan step requires image_policy: safe or adult")
+    if imagePolicy notin ["safe", "adult"]:
+      raise newException(ValueError, "invalid image_policy in plan step: " & imagePolicy)
+    let imageDirectorRequired = if imagePolicy == "adult": modelRoleName(mrGrok43) else: modelRoleName(mrGemini38)
+    if imageDirector != imageDirectorRequired:
+      raise newException(ValueError, "image plan step with image_policy " & imagePolicy & " must use model " & imageDirectorRequired & ", received " & imageDirector)
+    result["image_policy"] = %imagePolicy
   if result.hasKey("depends_on"):
     if result["depends_on"].kind != JArray:
       raise newException(ValueError, "plan step depends_on must be an array")
